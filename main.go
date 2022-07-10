@@ -26,7 +26,7 @@ func main() {
 	if err != nil {
 		return
 	}
-	fm := entity.NewFuncMap()
+	fm := entity.NewFuncSet()
 	var errors []error
 	for _, filename := range files {
 		f, err := parser.ParseFile(fset, filename, nil, parser.AllErrors|parser.ParseComments|parser.Trace)
@@ -50,7 +50,7 @@ func main() {
 					goStmt := stmt.(*ast.GoStmt)
 					fmt.Println("hit go func", fnc.Name.String())
 					ident := goStmt.Call.Fun.(*ast.Ident)
-					fm.InitFunc(ident)
+					fm.AddFunc(ident)
 				case *ast.AssignStmt:
 					aStmt := stmt.(*ast.AssignStmt)
 					if len(aStmt.Rhs) == 0 {
@@ -63,9 +63,9 @@ func main() {
 							switch c.Fun.(type) {
 							case *ast.SelectorExpr: // fset := token.NewFileSet()
 								s := c.Fun.(*ast.SelectorExpr)
-								fm.InitFunc(s.Sel) // 递归or迭代
+								fm.AddFunc(s.Sel) // 递归or迭代
 							case *ast.Ident:
-								fm.InitFunc(c.Fun.(*ast.Ident)) // files, err := findFiles([]string{"./"})
+								fm.AddFunc(c.Fun.(*ast.Ident)) // files, err := findFiles([]string{"./"})
 							}
 						}
 					}
@@ -80,7 +80,7 @@ func main() {
 								if cExpr.Fun != nil {
 									switch cExpr.Fun.(type) {
 									case *ast.SelectorExpr:
-										fm.InitFunc(cExpr.Fun.(*ast.SelectorExpr).Sel)
+										fm.AddFunc(cExpr.Fun.(*ast.SelectorExpr).Sel)
 									}
 								}
 							}
@@ -96,11 +96,9 @@ func main() {
 		fmt.Print(err)
 		return
 	}
-	fm.Iterator(func(fnc *entity.Func) {
-		if fnc.NeedRecover() {
-			fmt.Println("need recover", fnc)
-		}
-	})
+	for _, fnc := range fm.FindNeedRecoveredFunc() {
+		fmt.Println("need recover", fnc)
+	}
 }
 
 func findFiles(patterns []string) (_ []string, err error) {
