@@ -72,8 +72,8 @@ type FuncSet struct {
 	roots []*Func
 }
 
-func NewFuncSet() FuncSet {
-	return FuncSet{
+func NewFuncSet() *FuncSet {
+	return &FuncSet{
 		m: make(map[*ast.Ident]*Func),
 	}
 }

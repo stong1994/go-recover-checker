@@ -20,13 +20,12 @@ type Config struct {
 }
 
 func main() {
-	go hello()
 	fset := token.NewFileSet()
-	files, err := findFiles([]string{"./"})
+	files, err := findFiles([]string{"./data/"})
 	if err != nil {
 		return
 	}
-	fm := entity.NewFuncSet()
+	p := NewParser()
 	var errors []error
 	for _, filename := range files {
 		f, err := parser.ParseFile(fset, filename, nil, parser.AllErrors|parser.ParseComments|parser.Trace)
@@ -41,54 +40,7 @@ func main() {
 			if !ok {
 				continue
 			}
-			if fnc.Body == nil || len(fnc.Body.List) == 0 { // body is empty, ignore
-				continue
-			}
-			for _, stmt := range fnc.Body.List {
-				switch stmt.(type) {
-				case *ast.GoStmt:
-					goStmt := stmt.(*ast.GoStmt)
-					fmt.Println("hit go func", fnc.Name.String())
-					ident := goStmt.Call.Fun.(*ast.Ident)
-					fm.AddFunc(ident)
-				case *ast.AssignStmt:
-					aStmt := stmt.(*ast.AssignStmt)
-					if len(aStmt.Rhs) == 0 {
-						continue
-					}
-					for _, expr := range aStmt.Rhs {
-						switch expr.(type) {
-						case *ast.CallExpr:
-							c := expr.(*ast.CallExpr)
-							switch c.Fun.(type) {
-							case *ast.SelectorExpr: // fset := token.NewFileSet()
-								s := c.Fun.(*ast.SelectorExpr)
-								fm.AddFunc(s.Sel) // 递归or迭代
-							case *ast.Ident:
-								fm.AddFunc(c.Fun.(*ast.Ident)) // files, err := findFiles([]string{"./"})
-							}
-						}
-					}
-				case *ast.IfStmt:
-					ifStmt := stmt.(*ast.IfStmt)
-					if init := ifStmt.Init; init != nil {
-						a := init.(*ast.AssignStmt)
-						for _, expr := range a.Rhs {
-							switch expr.(type) {
-							case *ast.CallExpr:
-								cExpr := expr.(*ast.CallExpr)
-								if cExpr.Fun != nil {
-									switch cExpr.Fun.(type) {
-									case *ast.SelectorExpr:
-										fm.AddFunc(cExpr.Fun.(*ast.SelectorExpr).Sel)
-									}
-								}
-							}
-						}
-					}
-					// todo handle body and cond
-				}
-			}
+			p.parseFunc(fnc)
 		}
 	}
 
@@ -96,7 +48,7 @@ func main() {
 		fmt.Print(err)
 		return
 	}
-	for _, fnc := range fm.FindNeedRecoveredFunc() {
+	for _, fnc := range p.funcSet.FindNeedRecoveredFunc() {
 		fmt.Println("need recover", fnc)
 	}
 }
@@ -160,6 +112,156 @@ func findGoFiles(path string) ([]string, error) {
 	return files, err
 }
 
-// hello
-// This is a function
-func hello() {}
+type Parser struct {
+	funcSet *entity.FuncSet
+	fileSet token.FileSet
+	astFile ast.File
+}
+
+func NewParser() *Parser {
+	fs := entity.NewFuncSet()
+	p := &Parser{funcSet: fs}
+
+	return p
+}
+
+func (p *Parser) parseFunc(fnc *ast.FuncDecl) {
+	if fnc.Body == nil || len(fnc.Body.List) == 0 { // body is empty, ignore
+		return
+	}
+	for _, stmt := range fnc.Body.List {
+		rst := p.handleStmt(stmt)
+		if rst.needRecover {
+			fmt.Println("need recover", fnc.Name.Name, stmt.Pos(), stmt.End())
+		}
+	}
+}
+
+type rstHandleIdent struct {
+	isRecover bool
+}
+
+type rstHandleStmt struct {
+	isRecover   bool
+	needRecover bool
+}
+
+func (p *Parser) handleStmt(stmt ast.Stmt) (rst rstHandleStmt) {
+	switch stmt.(type) {
+	case *ast.GoStmt:
+		r := p.handleExpr(stmt.(*ast.GoStmt).Call.Fun)
+		if !r.isRecover {
+			rst.needRecover = true
+		}
+		for _, expr := range stmt.(*ast.GoStmt).Call.Args {
+			p.handleExpr(expr)
+		}
+	case *ast.DeferStmt:
+		st := stmt.(*ast.DeferStmt)
+		if st == nil {
+			return
+		}
+		p.fillRstExpr2Stmt(&rst, p.handleExpr(st.Call.Fun))
+		for _, expr := range st.Call.Args {
+			p.fillRstExpr2Stmt(&rst, p.handleExpr(expr))
+		}
+	case *ast.AssignStmt:
+		aStmt := stmt.(*ast.AssignStmt)
+		for _, expr := range aStmt.Lhs {
+			p.fillRstExpr2Stmt(&rst, p.handleExpr(expr))
+		}
+		for _, expr := range aStmt.Rhs {
+			p.fillRstExpr2Stmt(&rst, p.handleExpr(expr))
+		}
+	case *ast.IfStmt:
+		ifStmt := stmt.(*ast.IfStmt)
+		p.handleStmt(ifStmt.Init)
+		p.handleStmt(ifStmt.Else)
+		p.fillRstExpr2Stmt(&rst, p.handleExpr(ifStmt.Cond))
+		p.fillRstBlock2Stmt(&rst, p.handleBody(ifStmt.Body))
+	case *ast.ExprStmt:
+		p.fillRstExpr2Stmt(&rst, p.handleExpr(stmt.(*ast.ExprStmt).X))
+	}
+	return
+}
+
+type rstHandleExpr struct {
+	isRecover bool
+}
+
+func (p *Parser) handleExpr(expr ast.Expr) (rst rstHandleExpr) {
+	switch expr.(type) {
+	case *ast.CallExpr:
+		cExpr := expr.(*ast.CallExpr)
+		p.fillRstExpr2Expr(&rst, p.handleExpr(cExpr.Fun))
+		for _, expr := range cExpr.Args {
+			p.fillRstExpr2Expr(&rst, p.handleExpr(expr))
+		}
+	case *ast.SelectorExpr:
+		p.fillRstExpr2Expr(&rst, p.handleExpr(expr.(*ast.SelectorExpr).X))
+	case *ast.FuncLit:
+		body := expr.(*ast.FuncLit).Body
+		if body == nil {
+			return
+		}
+		for _, stmt := range body.List {
+			p.handleStmt(stmt)
+		}
+	case *ast.Ident:
+		obj := expr.(*ast.Ident).Obj
+		if obj == nil {
+			return
+		}
+		if expr.(*ast.Ident).Name == "recover" {
+			rst.isRecover = true
+		}
+		if fnc, ok := obj.Decl.(*ast.FuncDecl); ok {
+			p.parseFunc(fnc)
+		}
+	}
+	return
+}
+
+func (p *Parser) fillRstIdent2Expr(dst *rstHandleExpr, src rstHandleIdent) {
+	if src.isRecover {
+		dst.isRecover = true
+	}
+}
+
+func (p *Parser) fillRstExpr2Expr(dst *rstHandleExpr, src rstHandleExpr) {
+	if src.isRecover {
+		dst.isRecover = true
+	}
+}
+
+func (p *Parser) fillRstExpr2Stmt(dst *rstHandleStmt, src rstHandleExpr) {
+	if src.isRecover {
+		dst.isRecover = true
+	}
+}
+
+type rstHandleBlock struct {
+	isRecover bool
+}
+
+func (p *Parser) handleBody(body *ast.BlockStmt) (rst rstHandleBlock) {
+	if body == nil {
+		return
+	}
+	for _, stmt := range body.List {
+		p.fillRstStmt2Block(&rst, p.handleStmt(stmt))
+	}
+	return
+}
+
+func (p *Parser) fillRstStmt2Block(dst *rstHandleBlock, src rstHandleStmt) {
+	if src.isRecover {
+		dst.isRecover = true
+	}
+}
+
+func (p *Parser) fillRstBlock2Stmt(dst *rstHandleStmt, src rstHandleBlock) {
+	if src.isRecover {
+		dst.isRecover = true
+	}
+}
