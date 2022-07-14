@@ -1,6 +1,7 @@
 package main
 
 import (
+	"github.com/stretchr/testify/assert"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -208,7 +209,7 @@ func recoverWorld() {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if !tt.check(NewChecker(), tt.fileContent) {
+			if !tt.check(NewChecker(nil), tt.fileContent) {
 				t.Errorf("not checked")
 			}
 		})
@@ -218,9 +219,62 @@ func recoverWorld() {
 
 func getTestFile(content string) *ast.File {
 	fs := token.NewFileSet()
-	file, err := parser.ParseFile(fs, "go-test.go", content, parser.ParseComments|parser.Trace|parser.AllErrors)
+	file, err := parser.ParseFile(fs, "go-test.go", content, parser.ParseComments|parser.AllErrors)
 	if err != nil {
 		panic(err)
 	}
 	return file
+}
+
+func TestParser_ParseFile(t *testing.T) {
+	contentCallThirdPartyRecover := `
+package data
+import "fmt"
+func helloNotRecover() {
+	go func(){
+		_ = Do(func(){
+			recoverWorld()
+		})
+	}()
+	fmt.Println("hello")
+}
+
+func recoverWorld() {
+	fmt.Println("world")
+}
+func Do(f func()) error {
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	f()
+	return err
+}
+
+`
+	tests := []struct {
+		name        string
+		fileContent string
+		check       func(p *Checker, content string) bool
+	}{
+		{
+			name:        "call third party recover func",
+			fileContent: contentCallThirdPartyRecover,
+			check: func(p *Checker, content string) bool {
+				err := p.ParseFile("", content)
+				assert.NoError(t, err)
+				return err == nil && len(p.GetNeedRecoverList()) == 0
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.check(NewChecker(nil), tt.fileContent) {
+				t.Errorf("not checked")
+			}
+		})
+	}
 }
