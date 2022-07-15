@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"github.com/stretchr/testify/assert"
 	"go/ast"
 	"go/parser"
@@ -181,6 +182,39 @@ func Do(f func()) error {
 	return err
 }
 `
+
+	contentRecoverInForMul = `
+package data
+import "fmt"
+
+type Service struct {}
+
+func (s Service) hi() {
+	go s.ExecTask()
+}
+
+func (s Service) ExecTask() {
+	for {
+		if err := Do(func() {
+			recoverWorld()
+		}); err != nil {}
+	}
+}
+
+func recoverWorld() {
+	fmt.Println("world")
+}
+func Do(f func()) error {
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	f()
+	return err
+}
+`
 )
 
 func TestParser_handleStmt(t *testing.T) {
@@ -297,6 +331,53 @@ func getTestFile(content string) *ast.File {
 		panic(err)
 	}
 	return file
+}
+
+func TestParser_handleMultiFile(t *testing.T) {
+	tests := []struct {
+		name         string
+		fileContents []string
+		check        func(p *Checker, contents ...string) bool
+	}{
+		{
+			name:         "contentRecoverInForMul1,2",
+			fileContents: []string{contentRecoverInForMul},
+			check: func(p *Checker, contents ...string) bool {
+				needRecover := false
+				handleTestFiles(func(fs *token.FileSet, f *ast.File) {
+					if len(f.Decls) != 1 {
+						return
+					}
+					goStmt := f.Decls[0].(*ast.FuncDecl).Body.List[2].(*ast.GoStmt)
+					_ = goStmt
+				}, contents...)
+				return needRecover == false
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if !tt.check(NewChecker(nil), tt.fileContents...) {
+				t.Errorf("not checked:%s", tt.name)
+			}
+		})
+	}
+}
+
+func handleTestFiles(fn func(fs *token.FileSet, file *ast.File), contents ...string) {
+	fs := token.NewFileSet()
+	var files []*ast.File
+	for i, content := range contents {
+		file, err := parser.ParseFile(fs, fmt.Sprintf("go-test_%d.go", i), content, parser.ParseComments|parser.AllErrors)
+		if err != nil {
+			panic(err)
+		}
+		files = append(files, file)
+	}
+	for _, file := range files {
+		fn(fs, file)
+	}
 }
 
 func TestParser_ParseFile(t *testing.T) {
