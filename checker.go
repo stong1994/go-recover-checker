@@ -6,6 +6,7 @@ import (
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"sort"
 	"strings"
 )
 
@@ -40,6 +41,9 @@ func (c *Checker) GetFileSet() *token.FileSet {
 
 func (c *Checker) DisplayNeedRecoverList() {
 	fmt.Println("need recover list:")
+	sort.Slice(c.needRecoverList, func(i, j int) bool {
+		return c.needRecoverList[i].Pos() < c.needRecoverList[j].Pos()
+	})
 	for i, fnc := range c.needRecoverList {
 		fmt.Printf("\t%d: %s\n", i, c.fset.PositionFor(fnc.Pos(), false))
 	}
@@ -81,7 +85,7 @@ func (c *Checker) ParseFile(filename string, src interface{}) error {
 	return nil
 }
 
-func (c *Checker) ParseFunc(fnc *ast.FuncDecl) (containRecover bool) {
+func (c *Checker) ParseFunc(fnc *ast.FuncDecl) {
 	if fnc.Body == nil || len(fnc.Body.List) == 0 { // body is empty, ignore
 		return
 	}
@@ -91,71 +95,108 @@ func (c *Checker) ParseFunc(fnc *ast.FuncDecl) (containRecover bool) {
 	return
 }
 
-func (c *Checker) parseFunc(fnc *ast.FuncDecl) (containRecover bool) {
+type rst struct {
+	hasRecover, hasDeferRecover bool
+	noNeedRecover               bool
+}
+
+func (r rst) needRecover() bool {
+	return !(r.noNeedRecover || r.hasDeferRecover)
+}
+
+var statelessRst = rst{}
+
+func (c *Checker) parseFunc(fnc *ast.FuncDecl) (r rst) {
 	if fnc.Body == nil || len(fnc.Body.List) == 0 { // body is empty, ignore
 		return
 	}
+	if c.fncHasIgnoreComment(fnc) {
+		r.noNeedRecover = true
+		return
+	}
 	for _, stmt := range fnc.Body.List {
-		if c.handleStmt(stmt) {
-			return true
-		}
+		c.r2r(&r, c.handleStmt(stmt))
 	}
 	return
 }
 
-func (c *Checker) handleStmt(stmt ast.Stmt) bool {
+func (c *Checker) r2r(dst *rst, src rst) {
+	if src.noNeedRecover {
+		dst.noNeedRecover = true
+	}
+	if src.hasDeferRecover {
+		dst.hasDeferRecover = true
+	}
+	if src.hasRecover {
+		dst.hasRecover = true
+	}
+}
+
+// 如果是*ast.GoStmt，则进入一个新的判断周期，这个周期中必须包含*ast.DeferStmt和recover()，
+// 同时dfs过程中，如果碰到其他*ast.GoStmt，则开启另一个周期，其结果不应影响之前的*ast.GoStmt
+func (c *Checker) handleStmt(stmt ast.Stmt) (r rst) {
 	switch stmt.(type) {
 	case *ast.GoStmt:
 		if c.isNeedRecover(stmt.(*ast.GoStmt)) {
 			c.needRecoverList = append(c.needRecoverList, stmt.(*ast.GoStmt))
 		}
-
+		return statelessRst
 	case *ast.DeferStmt:
-		sf := stmt.(*ast.DeferStmt).Call.Fun
-		if c.handleExpr(sf) {
-			return true
+		r2 := c.handleExpr(stmt.(*ast.DeferStmt).Call.Fun)
+		if r2.hasRecover {
+			r.hasDeferRecover = true
 		}
+		r.hasRecover = r2.hasRecover
+		r.noNeedRecover = r2.noNeedRecover
+	case *ast.DeclStmt:
+	// stmt.(*ast.DeclStmt).Decl
+	case *ast.LabeledStmt:
+		c.r2r(&r, c.handleStmt(stmt.(*ast.LabeledStmt).Stmt))
+		c.r2r(&r, c.handleIdent(stmt.(*ast.LabeledStmt).Label))
 	case *ast.AssignStmt:
-		for _, r := range stmt.(*ast.AssignStmt).Rhs {
-			if c.handleExpr(r) {
-				return true
-			}
+		for _, rh := range stmt.(*ast.AssignStmt).Rhs {
+			c.r2r(&r, c.handleExpr(rh))
 		}
 	case *ast.ExprStmt:
-		switch stmt.(*ast.ExprStmt).X.(type) {
-		case *ast.CallExpr:
-			c.handleExpr(stmt.(*ast.ExprStmt).X.(*ast.CallExpr).Fun)
+		c.r2r(&r, c.handleExpr(stmt.(*ast.ExprStmt).X))
+	case *ast.IfStmt:
+		c.r2r(&r, c.handleStmt(stmt.(*ast.IfStmt).Init))
+		c.r2r(&r, c.handleExpr(stmt.(*ast.IfStmt).Cond))
+		c.r2r(&r, c.handleStmt(stmt.(*ast.IfStmt).Else))
+		c.r2r(&r, c.handleStmt(stmt.(*ast.IfStmt).Body))
+	case *ast.BlockStmt:
+		for _, v := range stmt.(*ast.BlockStmt).List {
+			c.r2r(&r, c.handleStmt(v))
 		}
+	case *ast.ForStmt:
+		c.r2r(&r, c.handleStmt(stmt.(*ast.ForStmt).Init))
+		c.r2r(&r, c.handleExpr(stmt.(*ast.ForStmt).Cond))
+		c.r2r(&r, c.handleStmt(stmt.(*ast.ForStmt).Post))
+		c.r2r(&r, c.handleStmt(stmt.(*ast.ForStmt).Body))
+	case *ast.ReturnStmt:
+		for _, expr := range stmt.(*ast.ReturnStmt).Results {
+			c.r2r(&r, c.handleExpr(expr))
+		}
+
 	}
-	return false
+	return
 }
 
-func (c *Checker) handleExpr(r ast.Expr) (hasRecover bool) {
+func (c *Checker) handleExpr(r ast.Expr) (rs rst) {
 	switch r.(type) {
 	case *ast.CallExpr:
-		if f, ok := r.(*ast.CallExpr).Fun.(*ast.Ident); ok {
-			if identIsRecover(f) {
-				return true
-			}
-			if f.Obj != nil {
-				if fd, ok := f.Obj.Decl.(*ast.FuncDecl); ok {
-					containRecover := c.parseFunc(fd)
-					if containRecover {
-						return true
-					}
-				}
-			}
-		}
+		return c.handleExpr(r.(*ast.CallExpr).Fun)
 	case *ast.Ident:
-		if c.handleIdent(r.(*ast.Ident)) {
-			return true
-		}
+		c.r2r(&rs, c.handleIdent(r.(*ast.Ident)))
 	case *ast.FuncLit:
-		if c.funcLitHasRecover(r.(*ast.FuncLit)) {
-			return true
+		for _, s := range r.(*ast.FuncLit).Body.List {
+			c.r2r(&rs, c.handleStmt(s))
 		}
+	case *ast.SelectorExpr:
+		c.r2r(&rs, c.handleExpr(r.(*ast.SelectorExpr).X))
+		c.r2r(&rs, c.handleIdent(r.(*ast.SelectorExpr).Sel))
 	}
-	return false
+	return
 }
 
 // go函数中，recover的使用方式可以归类为：
@@ -171,43 +212,20 @@ func (c *Checker) handleExpr(r ast.Expr) (hasRecover bool) {
 // }
 func (c *Checker) isNeedRecover(stmt *ast.GoStmt) (needRecover bool) {
 	fnc := stmt.Call.Fun
-	switch fnc.(type) {
-	case *ast.Ident:
-		if c.handleIdent(fnc.(*ast.Ident)) {
-			return false
-		}
-	case *ast.FuncLit:
-		if c.funcLitHasRecover(fnc.(*ast.FuncLit)) {
-			return false
-		}
-	}
-	return true
+	r := c.handleExpr(fnc)
+	return r.needRecover()
 }
 
-func (c *Checker) handleIdent(ident *ast.Ident) (hasRecover bool) {
+func (c *Checker) handleIdent(ident *ast.Ident) (r rst) {
 	if identIsRecover(ident) {
-		return true
+		r.hasRecover = true
 	}
 	if obj := ident.Obj; obj != nil {
 		if fd, ok := obj.Decl.(*ast.FuncDecl); ok {
-			if c.fncHasIgnoreComment(fd) {
-				return true
-			}
-			if hasRecover := c.fncHasRecover(fd); hasRecover {
-				return true
-			}
+			c.r2r(&r, c.parseFunc(fd))
 		}
 	}
-	return false
-}
-
-func (c *Checker) fncHasRecover(fnc *ast.FuncDecl) bool {
-	for _, stmt := range fnc.Body.List {
-		if c.handleStmt(stmt) {
-			return true
-		}
-	}
-	return false
+	return
 }
 
 func (c *Checker) fncHasIgnoreComment(fnc *ast.FuncDecl) bool {
@@ -223,11 +241,7 @@ func (c *Checker) fncHasIgnoreComment(fnc *ast.FuncDecl) bool {
 }
 
 func (c *Checker) funcLitHasRecover(fl *ast.FuncLit) bool {
-	for _, s := range fl.Body.List {
-		if c.handleStmt(s) {
-			return true
-		}
-	}
+
 	return false
 }
 

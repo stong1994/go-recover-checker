@@ -8,8 +8,8 @@ import (
 	"testing"
 )
 
-func TestParser_handleStmt(t *testing.T) {
-	contentDirectRecover := `
+var (
+	contentDirectRecover = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -17,7 +17,7 @@ func helloNotRecover() {
 	fmt.Println("hello")
 }
 `
-	contentRecoverNoRecv := `
+	contentRecoverNoRecv = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -27,7 +27,7 @@ func helloNotRecover() {
 	fmt.Println("hello")
 }
 `
-	contentRecoverIdent := `
+	contentRecoverIdent = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -39,7 +39,7 @@ func recoverWorld() {
 	fmt.Println("world")
 }
 `
-	contentRecoverStmt := `
+	contentRecoverStmt = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -54,7 +54,7 @@ func recoverWorld() {
 }
 `
 
-	contentNoRecover := `
+	contentNoRecover = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -67,7 +67,7 @@ func recoverWorld() {
 	fmt.Println("world")
 }
 `
-	contentNoDeferWhenRecover := `
+	contentNoDeferWhenRecover = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -80,7 +80,7 @@ func recoverWorld() {
 }
 `
 
-	contentRecoverIn2LayerFunc := `
+	contentRecoverIn2LayerFunc = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -96,7 +96,7 @@ func recoverWorld() {
 	fmt.Println("world")
 }`
 
-	contentRecoverIn3LayerFunc := `
+	contentRecoverIn3LayerFunc = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -114,7 +114,7 @@ func recoverWorld() {
 	fmt.Println("world")
 }`
 
-	contentIgnoreComment := `
+	contentIgnoreComment = `
 package data
 import "fmt"
 func helloNotRecover() {
@@ -127,6 +127,63 @@ func recoverWorld() {
 	fmt.Println("world")
 }`
 
+	contentCallThirdPartyRecover = `
+package data
+import "fmt"
+func helloNotRecover() {
+	go func(){
+		_ = Do(func(){
+			recoverWorld()
+		})
+	}()
+	fmt.Println("hello")
+}
+
+func recoverWorld() {
+	fmt.Println("world")
+}
+func Do(f func()) error {
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	f()
+	return err
+}
+`
+	contentRecoverInFor = `
+package data
+import "fmt"
+func helloNotRecover() {
+	go func(){
+		for i := 0; i < 10; i++ {
+			_ = Do(func(){
+				recoverWorld()
+			})
+		}
+	}()
+	fmt.Println("hello")
+}
+
+func recoverWorld() {
+	fmt.Println("world")
+}
+func Do(f func()) error {
+	var err error
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("%v", r)
+		}
+	}()
+	f()
+	return err
+}
+`
+)
+
+func TestParser_handleStmt(t *testing.T) {
 	tests := []struct {
 		name        string
 		fileContent string
@@ -138,7 +195,7 @@ func recoverWorld() {
 			check: func(p *Checker, content string) bool {
 				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
 				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
-				return needRecover == false
+				return needRecover == true
 			},
 		}, {
 			name:        "recover no receiver",
@@ -146,7 +203,7 @@ func recoverWorld() {
 			check: func(p *Checker, content string) bool {
 				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
 				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
-				return needRecover == false
+				return needRecover == true
 			},
 		}, {
 			name:        "recover func",
@@ -186,7 +243,7 @@ func recoverWorld() {
 			check: func(p *Checker, content string) bool {
 				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
 				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
-				return needRecover == true
+				return needRecover == false
 			},
 		}, {
 			name:        "recover in 3 layer func",
@@ -194,11 +251,27 @@ func recoverWorld() {
 			check: func(p *Checker, content string) bool {
 				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
 				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
-				return needRecover == true
+				return needRecover == false
 			},
 		}, {
 			name:        "ignore recover comment",
 			fileContent: contentIgnoreComment,
+			check: func(p *Checker, content string) bool {
+				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
+				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
+				return needRecover == false
+			},
+		}, {
+			name:        "call third party recover",
+			fileContent: contentCallThirdPartyRecover,
+			check: func(p *Checker, content string) bool {
+				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
+				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
+				return needRecover == false
+			},
+		}, {
+			name:        "call recover in for stmt",
+			fileContent: contentRecoverInFor,
 			check: func(p *Checker, content string) bool {
 				helloNotRecover := getTestFile(content).Decls[1].(*ast.FuncDecl)
 				needRecover := p.isNeedRecover(helloNotRecover.Body.List[0].(*ast.GoStmt))
@@ -210,7 +283,7 @@ func recoverWorld() {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if !tt.check(NewChecker(nil), tt.fileContent) {
-				t.Errorf("not checked")
+				t.Errorf("not checked:%s", tt.name)
 			}
 		})
 	}
@@ -227,33 +300,6 @@ func getTestFile(content string) *ast.File {
 }
 
 func TestParser_ParseFile(t *testing.T) {
-	contentCallThirdPartyRecover := `
-package data
-import "fmt"
-func helloNotRecover() {
-	go func(){
-		_ = Do(func(){
-			recoverWorld()
-		})
-	}()
-	fmt.Println("hello")
-}
-
-func recoverWorld() {
-	fmt.Println("world")
-}
-func Do(f func()) error {
-	var err error
-	defer func() {
-		if r := recover(); r != nil {
-			err = fmt.Errorf("%v", r)
-		}
-	}()
-	f()
-	return err
-}
-
-`
 	tests := []struct {
 		name        string
 		fileContent string
