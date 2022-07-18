@@ -18,6 +18,7 @@ type Config struct {
 type Checker struct {
 	fset            *token.FileSet
 	needRecoverList []*ast.GoStmt
+	collectedFunc   *MethodMap
 	Config
 }
 
@@ -50,6 +51,12 @@ func (c *Checker) DisplayNeedRecoverList() {
 }
 
 func (c *Checker) ParseFiles(filenameList []string) error {
+	funMap, err := CollectFunc(filenameList)
+	if err != nil {
+		return err
+	}
+	c.collectedFunc = funMap
+
 	var errors []error
 	files, err := findFiles(filenameList)
 	if err != nil {
@@ -67,9 +74,6 @@ func (c *Checker) ParseFiles(filenameList []string) error {
 }
 
 func (c *Checker) ParseFile(filename string, src interface{}) error {
-	if strings.Contains(filename, "global\\service") {
-		fmt.Println(filename)
-	}
 	f, err := parser.ParseFile(c.fset, filename, src, parser.AllErrors|parser.ParseComments)
 	if err != nil {
 		return err
@@ -195,6 +199,10 @@ func (c *Checker) handleExpr(r ast.Expr) (rs rst) {
 	case *ast.SelectorExpr:
 		c.r2r(&rs, c.handleExpr(r.(*ast.SelectorExpr).X))
 		c.r2r(&rs, c.handleIdent(r.(*ast.SelectorExpr).Sel))
+		method, ok := c.collectedFunc.GetMethod(r.(*ast.SelectorExpr))
+		if ok {
+			c.parseFunc(method)
+		}
 	}
 	return
 }
@@ -217,6 +225,10 @@ func (c *Checker) isNeedRecover(stmt *ast.GoStmt) (needRecover bool) {
 }
 
 func (c *Checker) handleIdent(ident *ast.Ident) (r rst) {
+	//if _, ok := c.collectedFunc[ident]; ok {
+	//	fmt.Println("abc ", c.fset.PositionFor(ident.Pos(), false))
+	//}
+
 	if identIsRecover(ident) {
 		r.hasRecover = true
 	}
