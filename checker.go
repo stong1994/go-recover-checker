@@ -29,6 +29,7 @@ func NewChecker(fset *token.FileSet) *Checker {
 	} else {
 		c.fset = fset
 	}
+	c.collectedFunc = NewMethodMap()
 	return c
 }
 
@@ -51,20 +52,27 @@ func (c *Checker) DisplayNeedRecoverList() {
 }
 
 func (c *Checker) ParseFiles(filenameList []string) error {
-	funMap, err := CollectFunc(filenameList)
-	if err != nil {
-		return err
-	}
-	c.collectedFunc = funMap
-
 	var errors []error
 	files, err := findFiles(filenameList)
 	if err != nil {
 		return err
 	}
+
+	var astFile []*ast.File
 	for _, file := range files {
-		if err = c.ParseFile(file, nil); err != nil {
+		if f, err := c.ParseFile(file, nil); err != nil {
 			errors = append(errors, err)
+		} else {
+			astFile = append(astFile, f)
+		}
+	}
+	for _, f := range astFile {
+		for _, decl := range f.Decls {
+			fnc, ok := decl.(*ast.FuncDecl)
+			if !ok || c.fncHasIgnoreComment(fnc) {
+				continue
+			}
+			c.ParseFunc(fnc)
 		}
 	}
 	if err = multierr.Combine(errors...); err != nil {
@@ -73,20 +81,17 @@ func (c *Checker) ParseFiles(filenameList []string) error {
 	return nil
 }
 
-func (c *Checker) ParseFile(filename string, src interface{}) error {
+func (c *Checker) ParseFile(filename string, src interface{}) (*ast.File, error) {
 	f, err := parser.ParseFile(c.fset, filename, src, parser.AllErrors|parser.ParseComments)
 	if err != nil {
-		return err
+		return nil, err
 	}
-	// 找到go关键词
-	for _, decl := range f.Decls {
-		fnc, ok := decl.(*ast.FuncDecl)
-		if !ok || c.fncHasIgnoreComment(fnc) {
-			continue
-		}
-		c.ParseFunc(fnc)
+	if strings.Contains(filename, "timer.go") {
+		fmt.Println(filename)
 	}
-	return nil
+	c.collectedFunc.CollectMethodInFile(f)
+
+	return f, nil
 }
 
 func (c *Checker) ParseFunc(fnc *ast.FuncDecl) {
@@ -201,7 +206,10 @@ func (c *Checker) handleExpr(r ast.Expr) (rs rst) {
 		c.r2r(&rs, c.handleIdent(r.(*ast.SelectorExpr).Sel))
 		method, ok := c.collectedFunc.GetMethod(r.(*ast.SelectorExpr))
 		if ok {
-			c.parseFunc(method)
+			if method.Name.Name == "ExecTimingSyncTask" {
+				fmt.Println("hi")
+			}
+			c.r2r(&rs, c.parseFunc(method))
 		}
 	}
 	return

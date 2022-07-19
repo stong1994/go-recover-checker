@@ -72,3 +72,18 @@ func CollectFunc(filenameList []string) (*MethodMap, error) {
 	}
 	return m, nil
 }
+
+func (mm *MethodMap) CollectMethodInFile(file *ast.File) {
+	ast.Inspect(file, func(node ast.Node) bool {
+		n, ok := node.(*ast.FuncDecl)
+		if !ok || n.Recv == nil || len(n.Recv.List) == 0 {
+			return true
+		}
+		t, ok := n.Recv.List[0].Type.(*ast.Ident)
+		if !ok || t.Obj == nil {
+			return true
+		}
+		mm.AddMethod(t.Obj, n.Name.Name, n)
+		return true
+	})
+}

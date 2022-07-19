@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"github.com/stretchr/testify/assert"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -377,31 +376,5 @@ func handleTestFiles(fn func(fs *token.FileSet, file *ast.File), contents ...str
 	}
 	for _, file := range files {
 		fn(fs, file)
-	}
-}
-
-func TestParser_ParseFile(t *testing.T) {
-	tests := []struct {
-		name        string
-		fileContent string
-		check       func(p *Checker, content string) bool
-	}{
-		{
-			name:        "call third party recover func",
-			fileContent: contentCallThirdPartyRecover,
-			check: func(p *Checker, content string) bool {
-				err := p.ParseFile("", content)
-				assert.NoError(t, err)
-				return err == nil && len(p.GetNeedRecoverList()) == 0
-			},
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if !tt.check(NewChecker(nil), tt.fileContent) {
-				t.Errorf("not checked")
-			}
-		})
 	}
 }
