@@ -67,9 +67,6 @@ func (c *Checker) ParseFiles(filenameList []string) error {
 }
 
 func (c *Checker) ParseFile(filename string, src interface{}) error {
-	if strings.Contains(filename, "global\\service") {
-		fmt.Println(filename)
-	}
 	f, err := parser.ParseFile(c.fset, filename, src, parser.AllErrors|parser.ParseComments)
 	if err != nil {
 		return err
