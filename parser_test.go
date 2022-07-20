@@ -1,12 +1,11 @@
 package main
 
 import (
-	"fmt"
 	"github.com/stretchr/testify/assert"
 	"testing"
 )
 
-func TestProgram_LoadPackage(t *testing.T) {
+func TestProgram_LoadFile(t *testing.T) {
 	tests := []struct {
 		Name string
 		Pro  *Program
@@ -34,12 +33,34 @@ func TestProgram_LoadPackage(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.Name, func(t *testing.T) {
-			pkg, f, err := tt.Pro.LoadPackage(tt.Path)
+			pkg, f, err := tt.Pro.LoadFile(tt.Path)
 			_, _ = pkg, f
 			assert.NoError(t, err)
-			for i := 0; i < pkg.Scope().NumChildren(); i++ {
-				fmt.Println(pkg.Scope().Child(i).String())
-			}
+		})
+	}
+}
+
+func TestProgram_LoadPackage(t *testing.T) {
+	tests := []struct {
+		Name string
+		Pro  *Program
+		Path string
+	}{
+		{
+			Name: "service",
+			Pro:  NewProgram(nil),
+			Path: "./test_data/service",
+		}, {
+			Name: "multi_pkg",
+			Pro:  NewProgram(nil),
+			Path: "./test_data/multi_pkg",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.Name, func(t *testing.T) {
+			pkg, err := tt.Pro.LoadPackage(tt.Path)
+			_ = pkg
+			assert.NoError(t, err)
 		})
 	}
 }
